@@ -13,15 +13,17 @@ import trimesh
 BASE_W, H, R_TOP, R_SIDE = 9.0, 12.0, 3.0, 40.0
 # ---- параметры крючка ----
 CLEAR = 0.20      # зазор по профилю (PETG)
-WALL = 1.8        # толщина упругих лапок / колпачка
+WALL = 2.7        # толщина упругих лапок / колпачка (было 1.8, x1.5)
 TAB_T = 1.2       # толщина зубца под основанием
-TAB_OVER = 0.8    # заход зубца под основание
+TAB_OVER = 0.7    # заход зубца под основание
 LENGTH = 20.0     # длина клипсы вдоль ручки (Z)
 STEM_W = 4.0      # толщина стержня крючка
 REACH = 15.0      # свободный вылет крючка (от колпачка до внутренней грани упора)
 LIP_T = 4.0       # толщина упора
 LIP_H = 8.0       # высота упора над стержнем
 FILLET = 3.0
+HOOK_ANGLE = 45.0  # угол стержня от боковой оси (0 = строго вбок)
+HOOK_Y = 5.0      # высота выхода стержня из боковой стенки
 
 def handle_profile(n=40):
     ox, oy = 0.0, H - R_TOP                   # центр дуги вершины
@@ -56,20 +58,28 @@ def build():
     cav = prof.buffer(CLEAR, join_style=1, resolution=32)
     gap = box(-(BASE_W / 2 - TAB_OVER), -10, BASE_W / 2 - TAB_OVER, 0)
     clip = outer.difference(cav).difference(gap)
-    # скосы на входе зубцов (нижняя внешняя кромка, чтобы клипса легко садилась)
-    ytop = H + WALL
-    stem = box(-STEM_W / 2, ytop - 1.0, STEM_W / 2, ytop + REACH + LIP_T)
-    # упор: вверх по +x от конца стержня
-    lip = box(-STEM_W / 2, ytop + REACH, STEM_W / 2 + LIP_H, ytop + REACH + LIP_T)
+    # крючок выходит из боковой стенки под углом 45 градусов (наружу от двери и вбок)
+    ang = math.radians(HOOK_ANGLE)
+    d = (math.cos(ang), math.sin(ang))            # направление стержня
+    n = (-math.sin(ang), math.cos(ang))           # направление упора (загиб к стенке)
+    # точка выхода: внешняя поверхность боковой стенки на высоте HOOK_Y
+    from shapely.geometry import LineString
+    seg = outer.intersection(LineString([(0, HOOK_Y), (30, HOOK_Y)]))
+    px, py = max(seg.coords)[0], HOOK_Y
+    px -= 1.5                                      # врезка в стенку для надёжного слияния
+    L = 1.5 + REACH
+    def rect(origin, u, v, lu, lv0, lv1):
+        pts = [(origin[0] + u[0]*a_ + v[0]*b_, origin[1] + u[1]*a_ + v[1]*b_) for a_, b_ in ((0, lv0), (lu, lv0), (lu, lv1), (0, lv1))]
+        return Polygon(pts)
+    stem = rect((px, py), d, n, L + LIP_T, -STEM_W / 2, STEM_W / 2)
+    lip = rect((px + d[0]*L, py + d[1]*L), d, n, LIP_T, -STEM_W / 2, STEM_W / 2 + LIP_H)
     hook = unary_union([stem, lip])
-    # скругление внутреннего угла (стержень/упор): добавляем заливку
-    f = FILLET
-    corner = box(STEM_W / 2, ytop + REACH - f, STEM_W / 2 + f, ytop + REACH)
-    from shapely.geometry import Point
-    cyl = Point(STEM_W / 2 + f, ytop + REACH - f).buffer(f, resolution=32)
-    hook = unary_union([hook, corner.difference(cyl)])
-    # округлить внешние углы упора
+    ix, iy = px + d[0]*L + n[0]*STEM_W/2, py + d[1]*L + n[1]*STEM_W/2   # внутренний угол
+    fc = Point(ix - d[0]*FILLET + n[0]*FILLET, iy - d[1]*FILLET + n[1]*FILLET).buffer(FILLET, resolution=32)
+    fill = Polygon([(ix, iy), (ix - d[0]*FILLET, iy - d[1]*FILLET), (ix - d[0]*FILLET + n[0]*FILLET, iy - d[1]*FILLET + n[1]*FILLET), (ix + n[0]*FILLET, iy + n[1]*FILLET)])
+    hook = unary_union([hook, fill.difference(fc)])
     hook = hook.buffer(-0.6, join_style=1).buffer(0.6, join_style=1, resolution=16)
+    hook = hook.difference(prof.buffer(CLEAR))      # крюк не должен залезать в ручку
     body = unary_union([clip, hook])
     return body, prof, info
 
@@ -77,6 +87,7 @@ def main(out):
     body, prof, info = build()
     mesh = trimesh.creation.extrude_polygon(body, LENGTH)
     mesh.export(out)
+    mesh.export(out.replace(".stl", ".obj"))
     print(info)
     print("watertight:", mesh.is_watertight, "volume mm3: %.0f" % mesh.volume, "bbox:", mesh.bounds.round(2).tolist())
     # предпросмотр
